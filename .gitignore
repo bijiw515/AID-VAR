@@ -1,0 +1,165 @@
+# ===================================================================
+#  Gitignore for Deep Learning Projects
+#
+#  说明：这个 .gitignore 文件适用于大多数使用 Python 和
+#  主流深度学习框架（如 TensorFlow, PyTorch, Keras）的项目。
+# =_=================================================================
+
+# -------------------------------------------------------------------
+#  通用忽略 (General)
+# -------------------------------------------------------------------
+
+# 编译过的 Python 文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 依赖管理 (Dependency Management)
+# 推荐使用 requirements.txt 或 environment.yml 来管理依赖，而不是将整个环境文件夹加入版本控制
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE 和编辑器配置 (IDE & Editor Configs)
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 操作系统生成的文件 (OS Generated Files)
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+
+# -------------------------------------------------------------------
+#  数据文件 (Datasets)
+# -------------------------------------------------------------------
+# 通常数据集文件很大，不适合放入 Git。推荐使用 DVC, Git LFS
+# 或者云存储 (S3, GCS) 来管理。
+#
+# 如果你的数据集很小，可以取消下面某些行的注释。
+*.csv
+*.json
+*.jsonl
+*.xml
+*.txt
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.gz
+*.zip
+*.tar.gz
+*.rar
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.webp
+
+# 按文件夹忽略 (Ignore by directory)
+# 创建一个名为 "data/", "datasets/", "input/" 的文件夹来存放你的数据
+data/
+datasets/
+input/
+raw_data/
+processed_data/
+
+
+# -------------------------------------------------------------------
+#  模型和输出 (Models & Outputs)
+# -------------------------------------------------------------------
+# 模型权重文件通常非常大。
+*.pt
+*.pth
+*.bin
+*.pb
+*.onnx
+*.engine
+*.tflite
+*.ckpt
+*.ckpt.*
+*.index
+*.meta
+*.data-*
+
+# 按文件夹忽略
+# 将模型、日志、输出图片等保存在特定文件夹中
+saved_models/
+checkpoints/
+logs/
+outputs/
+results/
+predictions/
+runs/
+
+
+# -------------------------------------------------------------------
+#  日志和报告 (Logs & Reports)
+# -------------------------------------------------------------------
+*.log
+*.log.*
+tensorboard/
+wandb/
+mlruns/ # MLflow tracking
+
+
+# -------------------------------------------------------------------
+#  特定工具和库 (Tool-specific)
+# -------------------------------------------------------------------
+
+# Jupyter Notebook
+.ipynb_checkpoints
+# 如果不想提交 Notebook 的输出内容，可以使用 nbstripout 工具
+# https://github.com/kynan/nbstripout
+
+# DVC (Data Version Control)
+.dvc/cache
+.dvc/tmp
+
+# Weights & Biases
+wandb/
+# 如果需要同步 `wandb run` 文件夹，可以改为 `wandb/latest-run` 和 `wandb/run-*`
+
+# Docker
+docker-compose.yml.override
+
+# Secrets and credentials
+credentials.json
+secrets.yml
+*.key
+
+
+# -------------------------------------------------------------------
+#  其他 (Miscellaneous)
+# -------------------------------------------------------------------
+# 下载的临时文件
+downloads/
+temp/
+
+# 测试报告和覆盖率
+htmlcov/
+.tox/
+.pytest_cache/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.lcov
+*.prof
