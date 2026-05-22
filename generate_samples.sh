@@ -1,9 +1,8 @@
-export CUDA_VISIBLE_DEVICES=6 && python generate_aid_fid_samples.py \
+python generate_aid_fid_samples.py \
     --model_depth 24 \
-    --cfg 5.0 \
+    --cfg 1.5 \
     --top_p 0.96 \
     --top_k 900 \
-    --planner_ckpt /home/intern/Ligong/VAR/exp_ckpt/checkpoints/GuidanceInjector_d24.pth
-    --create_npz \
+    --planner_ckpt GuidanceInjector_d24.pth
     --dtype float16 \
     --device cuda
