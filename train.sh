@@ -1,0 +1,25 @@
+torchrun \
+    --nnodes=1 \
+    --node_rank=0 \
+    --nproc_per_node=8 \
+    --master_addr=localhost \
+    --master_port=29600 \
+    train.py \
+    --data_path="datasets/imagenet-1k/data" \
+    --ep=100 \
+    --bs=32 \
+    --workers=8 \
+    --depth=16 \
+    --patch_nums="1_2_3_4_5_6_8_10_13_16" \
+    --var_ckpt="./checkpoints/var_d16.pth" \
+    --lr_planner=1e-6 \
+    --lr_discriminator=1e-6 \
+    --warmup_steps=0 \
+    --lambda_rec=0 \
+    --guidance_weight=0.005 \
+    --guidance_target_weight=0.001 \
+    --guidance_ramp_epochs=15 \
+    --r1_gamma=0.2 \
+    --output_dir="./experiments" \
+    --save_interval=1 \
+    --val_interval=1
