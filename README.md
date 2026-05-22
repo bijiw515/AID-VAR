@@ -76,11 +76,11 @@ torchrun ... train.py ... \
 ```bash
 # Node 0
 torchrun --nnodes=2 --node_rank=0 --nproc_per_node=8 \
-    --master_addr=<node0-ip> --master_port=29600 train.py ...
+    --master_addr=<node0-ip> --master_port=29600 train_planner.py ...
 
 # Node 1
 torchrun --nnodes=2 --node_rank=1 --nproc_per_node=8 \
-    --master_addr=<node0-ip> --master_port=29600 train.py ...
+    --master_addr=<node0-ip> --master_port=29600 train_planner.py ...
 ```
 
 ## Sampling
