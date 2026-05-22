@@ -1,7 +1,8 @@
 # Adversarially Error Correction for Visual Autoregressive Generation
 
 Code for paper Adversarially Error Correction for Visual Autoregressive Generation
-[framework (3).pdf](https://github.com/user-attachments/files/28147125/framework.3.pdf)
+<img width="1620" height="831" alt="2bb37033e79da37186eb37c2e769a2c5" src="https://github.com/user-attachments/assets/1e07accb-9173-4585-b8cd-928ce8a4fb35" />
+
 ## Highlights
 
 - 💪 **Cross‑scale error correction** – A lightweight injector identifies and corrects cumulated errors in VAR models.
