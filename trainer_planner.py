@@ -14,13 +14,13 @@ import torch.nn.functional as F
 import dist
 from models.var import VAR
 from models.vqvae import VQVAE
-from models.planning_module import I_predictor
+from models.guidance_injector import GuidanceInjector
 from models.discriminator_adapter import StyleGANDiscriminatorAdapter
 from utils.amp_sc import AmpOptimizer
 from utils.misc import MetricLogger, TensorboardLogger
 
-# 导入AGIP辅助函数模块
-import agip_helpers
+# 导入AID辅助函数模块
+import aid_helpers
 
 Ten = torch.Tensor
 ITen = torch.LongTensor
@@ -28,11 +28,11 @@ ITen = torch.LongTensor
 logger = logging.getLogger(__name__)
 
 class PlannerTrainer:
-    """✅ 完全重构的AGIP-VAR训练器，使用空间感知的规划词元图 + 交替训练策略
+    """✅ 完全重构的AID-VAR训练器，使用空间感知的规划词元图 + 交替训练策略
     
     核心特性：
-    🎯 空间感知规划：I_predictor输出规划词元图，与VAR状态逐位置相加
-    🔄 交替训练：discriminator和I_predictor交替更新，避免计算图冲突
+    🎯 空间感知规划：GuidanceInjector输出规划词元图，与VAR状态逐位置相加
+    🔄 交替训练：discriminator和GuidanceInjector交替更新，避免计算图冲突
     🚨 自动崩溃检测：检测discriminator模式崩溃并自动恢复
     📈 渐进式引导：从0.00到最大值的渐进式引导权重增长
     🧊 分阶段训练：预热阶段→联合训练阶段的平滑过渡
@@ -43,7 +43,7 @@ class PlannerTrainer:
         device,
         vae: VQVAE,
         var: VAR,
-        planner: I_predictor,
+        planner: GuidanceInjector,
         disc: StyleGANDiscriminatorAdapter,
         opt_planner: AmpOptimizer,
         opt_disc: AmpOptimizer,
@@ -86,7 +86,7 @@ class PlannerTrainer:
         self.is_warmup_phase = True
         
         # 🔄 交替训练管理器
-        self.alternating_manager = agip_helpers.AlternatingTrainingManager(
+        self.alternating_manager = aid_helpers.AlternatingTrainingManager(
             strategy=alternating_strategy,
             warmup_steps=warmup_steps,
             guidance_weight_max=guidance_weight_max,
@@ -111,19 +111,19 @@ class PlannerTrainer:
         planner_params = sum(p.numel() for p in self.planner.parameters() if p.requires_grad)
         disc_trainable_params = self.disc.get_trainable_params()
         disc_params = sum(p.numel() for p in disc_trainable_params)
-        # AGIP-VAR参数统计 (静默)
+        # AID-VAR参数统计 (静默)
         
         # 🎯 分阶段训练状态
         if self.enable_staged_training:
-            self._freeze_planner()  # 初始化时冻结I_predictor
+            self._freeze_planner()  # 初始化时冻结GuidanceInjector
 
     def _freeze_planner(self):
-        """冻结I_predictor参数"""
+        """冻结GuidanceInjector参数"""
         for param in self.planner.parameters():
             param.requires_grad = False
 
     def _unfreeze_planner(self):
-        """解冻I_predictor参数"""
+        """解冻GuidanceInjector参数"""
         for param in self.planner.parameters():
             param.requires_grad = True
 
@@ -163,18 +163,18 @@ class PlannerTrainer:
             return zero_planning_map
 
     def train_step(self, img_B3HW: Ten, label_B: ITen, metric_lg: Optional[MetricLogger] = None):
-        """🚀 AGIP-VAR逐尺度训练步骤 - 基于VAR的autoregressive_train_step方法的逐尺度训练逻辑
+        """🚀 AID-VAR逐尺度训练步骤 - 基于VAR的autoregressive_train_step方法的逐尺度训练逻辑
         
         核心改进：
         1. 📊 标准Token生成：使用VAR的autoregressive_train_step方法，逐尺度生成std_tokens (无引导)
-        2. 🎯 引导Token生成：使用std_tokens作为I_predictor输入，生成所有尺度的guidance_tokens
+        2. 🎯 引导Token生成：使用std_tokens作为GuidanceInjector输入，生成所有尺度的guidance_tokens
         3. 🔄 引导Token生成：使用VAR的autoregressive_train_step方法，逐尺度生成fake_tokens (有引导)
         4. 🥊 批次级梯度下降：使用多尺度discriminator损失进行单次梯度下降
         
         训练流程：
         Step 1: 获取真实tokens (监督信号)
         Step 2: 使用VAR逐尺度自回归生成std_tokens (无引导，确定性采样)
-        Step 3: 使用I_predictor生成guidance_tokens (基于std_tokens，逐尺度)
+        Step 3: 使用GuidanceInjector生成guidance_tokens (基于std_tokens，逐尺度)
         Step 4: 使用VAR逐尺度自回归生成fake_tokens (有引导，随机采样)
         Step 5: 批次级判别器训练 (多尺度损失聚合)
         """
@@ -474,21 +474,21 @@ class PlannerTrainer:
         
         # 记录指标
         if metric_lg is not None:
-            metric_lg.update(agip_loss_D=avg_loss_D.item())
-            metric_lg.update(agip_loss_P=avg_loss_P.item())
-            metric_lg.update(agip_loss_adv=avg_loss_adv.item())
-            metric_lg.update(agip_loss_rec=avg_loss_rec.item())
-            metric_lg.update(agip_acc_D=avg_acc_D)
-            metric_lg.update(agip_acc_real=avg_acc_real)
-            metric_lg.update(agip_acc_fake=avg_acc_fake)
-            metric_lg.update(agip_scales=valid_scales)
-            metric_lg.update(agip_warmup_phase=int(self.is_warmup_phase) if self.enable_staged_training else 0)
-            metric_lg.update(agip_step=self.current_step)
-            metric_lg.update(agip_guidance_weight=guidance_weight)
-            metric_lg.update(agip_recovery_mode=int(self.recovery_mode))
+            metric_lg.update(aid_loss_D=avg_loss_D.item())
+            metric_lg.update(aid_loss_P=avg_loss_P.item())
+            metric_lg.update(aid_loss_adv=avg_loss_adv.item())
+            metric_lg.update(aid_loss_rec=avg_loss_rec.item())
+            metric_lg.update(aid_acc_D=avg_acc_D)
+            metric_lg.update(aid_acc_real=avg_acc_real)
+            metric_lg.update(aid_acc_fake=avg_acc_fake)
+            metric_lg.update(aid_scales=valid_scales)
+            metric_lg.update(aid_warmup_phase=int(self.is_warmup_phase) if self.enable_staged_training else 0)
+            metric_lg.update(aid_step=self.current_step)
+            metric_lg.update(aid_guidance_weight=guidance_weight)
+            metric_lg.update(aid_recovery_mode=int(self.recovery_mode))
             stats = self.alternating_manager.get_training_stats()
-            metric_lg.update(agip_disc_updates=stats['discriminator_updates'])
-            metric_lg.update(agip_planner_updates=stats['planner_updates'])
+            metric_lg.update(aid_disc_updates=stats['discriminator_updates'])
+            metric_lg.update(aid_planner_updates=stats['planner_updates'])
         
         # 保留内部统计但移除详细输出
         guidance_weight = self.alternating_manager.get_progressive_guidance_weight(self.current_step)
@@ -533,7 +533,7 @@ class PlannerTrainer:
         epoch: int, 
         save_dir: str
     ) -> Dict[str, float]:
-        """✅ 执行一个epoch的AGIP-VAR验证
+        """✅ 执行一个epoch的AID-VAR验证
         
         完全按照训练逻辑执行，但不进行梯度更新
         """
@@ -601,8 +601,8 @@ class PlannerTrainer:
                         )
                         
                     
-                    # 🎯 Step 3: AGIP-VAR逐尺度引导生成 + 对抗验证 (完全模仿训练逻辑)
-                    batch_metrics = self._validate_agip_var_multiscale_generation(
+                    # 🎯 Step 3: AID-VAR逐尺度引导生成 + 对抗验证 (完全模仿训练逻辑)
+                    batch_metrics = self._validate_aid_var_multiscale_generation(
                         B, labels, gt_idx_Bl, std_tokens_list, std_logits_list, epoch, batch_idx, save_dir, rng
                     )
                     
@@ -621,8 +621,8 @@ class PlannerTrainer:
                         # 计算最后一个尺度的MSE
                         if len(gt_idx_Bl) > 0 and len(std_tokens_list) > 0 and len(guided_tokens_list) > 0:
                             try:
-                                mse_std = agip_helpers.calculate_mse_loss(std_tokens_list[-1], gt_idx_Bl[-1])
-                                mse_guided = agip_helpers.calculate_mse_loss(guided_tokens_list[-1], gt_idx_Bl[-1])
+                                mse_std = aid_helpers.calculate_mse_loss(std_tokens_list[-1], gt_idx_Bl[-1])
+                                mse_guided = aid_helpers.calculate_mse_loss(guided_tokens_list[-1], gt_idx_Bl[-1])
                                 improvement = max(0, (mse_std - mse_guided) / (mse_std + 1e-8))
                                 val_metrics['mse_improvement'] += improvement
                             except Exception as e:
@@ -645,8 +645,8 @@ class PlannerTrainer:
                                                         # 计算各尺度指标
                             if si < len(gt_idx_Bl) and si < len(std_tokens_list) and si < len(guided_tokens_list):
                                 try:
-                                    scale_mse_std = agip_helpers.calculate_mse_loss(std_tokens_list[si], gt_idx_Bl[si])
-                                    scale_mse_guided = agip_helpers.calculate_mse_loss(guided_tokens_list[si], gt_idx_Bl[si])
+                                    scale_mse_std = aid_helpers.calculate_mse_loss(std_tokens_list[si], gt_idx_Bl[si])
+                                    scale_mse_guided = aid_helpers.calculate_mse_loss(guided_tokens_list[si], gt_idx_Bl[si])
                                     scale_improvement = max(0, (scale_mse_std - scale_mse_guided) / (scale_mse_std + 1e-8))
                                     
                                     val_metrics['scale_wise_performance'][scale_key]['mse_std'] += scale_mse_std
@@ -695,13 +695,13 @@ class PlannerTrainer:
         
         # 🔬 生成视觉调试摘要 (如果有保存调试样本)
         try:
-            agip_helpers.generate_visual_debug_summary(save_dir, epoch)
+            aid_helpers.generate_visual_debug_summary(save_dir, epoch)
         except Exception as e:
             pass
         
         return val_metrics
     
-    def _validate_agip_var_multiscale_generation(
+    def _validate_aid_var_multiscale_generation(
         self, 
         B: int, 
         labels: ITen, 
@@ -713,13 +713,13 @@ class PlannerTrainer:
         save_dir: str,
         rng: torch.Generator
     ) -> Dict[str, float]:
-        """✅ 完全按照train_step逻辑实现的AGIP-VAR验证
+        """✅ 完全按照train_step逻辑实现的AID-VAR验证
         
         这个方法完全模仿train_step中的逐尺度生成逻辑，
         但不执行梯度更新，只计算损失指标
         """
         
-        # Step 2: AGIP-VAR逐尺度引导生成
+        # Step 2: AID-VAR逐尺度引导生成
         
         # 初始化损失统计
         loss_D_total = torch.tensor(0.0, device=self.device)
@@ -732,7 +732,7 @@ class PlannerTrainer:
         acc_fake_sum = 0.0  # 新增：分别统计假样本准确率
         valid_scales = 0
         
-        # 🎯 生成引导tokens (使用I_predictor，基于std_tokens) - 并行生成所有尺度
+        # 🎯 生成引导tokens (使用GuidanceInjector，基于std_tokens) - 并行生成所有尺度
         guidance_tokens_list = []
         
         if not (self.enable_staged_training and self.is_warmup_phase):
@@ -847,7 +847,7 @@ class PlannerTrainer:
                     loss_D_fake = F.relu(1 + pred_fake_mean).mean()
                     loss_D = loss_D_real + loss_D_fake
                     
-                    # I_predictor损失计算
+                    # GuidanceInjector损失计算
                     loss_adv = -pred_fake_mean.mean()
                     
                     # 计算重构损失 (基于逐尺度的logits，与训练逻辑完全一致)
@@ -859,7 +859,7 @@ class PlannerTrainer:
                     
                     # 判断是否为预热阶段
                     if self.enable_staged_training and self.is_warmup_phase:
-                        loss_P = torch.tensor(0.0, device=self.device)  # 预热阶段不训练I_predictor
+                        loss_P = torch.tensor(0.0, device=self.device)  # 预热阶段不训练GuidanceInjector
                     else:
                         loss_P = loss_adv + self.lambda_rec * loss_rec
                     
@@ -884,7 +884,7 @@ class PlannerTrainer:
                         logger.info(f"       📊 损失分解: Adv={loss_adv.item():.4f}, Rec={loss_rec.item():.4f}")
                     
                     # 🔬 视觉调试：保存解码样本图像
-                    should_save_visual = agip_helpers.should_save_visual_debug(
+                    should_save_visual = aid_helpers.should_save_visual_debug(
                         epoch=epoch,
                         batch_idx=batch_idx,
                         scale_idx=si,
@@ -902,7 +902,7 @@ class PlannerTrainer:
                             # 假tokens历史：使用generated_guided_tokens中之前尺度的数据
                             fake_tokens_history = generated_guided_tokens[:si] if si > 0 else []
                             
-                            agip_helpers.save_visual_debugging_samples(
+                            aid_helpers.save_visual_debugging_samples(
                                 vae=self.vae,
                                 patch_nums=self.patch_nums,
                                 Cvae=self.Cvae,
@@ -924,7 +924,7 @@ class PlannerTrainer:
                             if si == len(self.patch_nums) - 1:  # 最后一个scale
                                 logger.info(f"       🎨 创建多尺度综合比较图...")
                                 try:
-                                    agip_helpers.create_multi_scale_composite_images(
+                                    aid_helpers.create_multi_scale_composite_images(
                                         save_dir=save_dir,
                                         epoch=epoch,
                                         batch_idx=batch_idx,

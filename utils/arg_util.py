@@ -7,6 +7,7 @@ import sys
 import time
 from collections import OrderedDict
 from typing import Optional, Union
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -139,10 +140,13 @@ class Args(Tap):
     # checkpoint恢复
     resume_checkpoint: str = ""  # 恢复训练的检查点路径
     
-    # 🔥 AGIP-VAR训练参数
-    lr_planner: float = None      # I_predictor学习率，覆盖默认配置
+    # 🔥 AID-VAR训练参数
+    lr_planner: float = None      # GuidanceInjector学习率，覆盖默认配置
     lr_discriminator: float = None  # 判别器学习率，覆盖默认配置
     load_optimizer: bool = True   # 是否加载优化器状态（包括学习率）
+    
+    # 🔥 消融实验参数
+    use_broadcast_mode: bool = False  # 是否使用广播模式（消融实验）
     
     def compile_model(self, m, fast):
         if fast == 0 or self.local_debug:

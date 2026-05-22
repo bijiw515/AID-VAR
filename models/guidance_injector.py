@@ -1,5 +1,5 @@
 """
-🔥 AGIP-VAR规划模块：轻量级I_predictor
+🔥 AID-VAR规划模块：轻量级GuidanceInjector
 """
 
 import torch
@@ -172,7 +172,7 @@ class UltraSafeTransformerEncoder(nn.Module):
         
         return torch.clamp(x, min=-3.0, max=3.0)
 
-class I_predictor(nn.Module):
+class GuidanceInjector(nn.Module):
     """
     🎯 隐式规划器 - 生成空间感知的规划词元图
     
@@ -212,7 +212,7 @@ class I_predictor(nn.Module):
         # 最终层归一化
         self.final_norm = SafeLayerNorm(embed_dim)
         
-        # I_predictor初始化完成 (静默)
+        # GuidanceInjector初始化完成 (静默)
     
     def _get_position_encoding(self, size: int, device: torch.device) -> torch.Tensor:
         """获取或创建位置编码"""
@@ -312,8 +312,8 @@ class I_predictor(nn.Module):
 
 # 为了向后兼容，保持原有的IPlanner类名
 def create_iplanner(embed_dim=1024, hidden_dim=512, num_layers=2, num_heads=8):
-    """创建I_predictor实例（现在默认为空间感知模式）"""
-    model = I_predictor(embed_dim, hidden_dim, num_layers, num_heads)
+    """创建GuidanceInjector实例（现在默认为空间感知模式）"""
+    model = GuidanceInjector(embed_dim, hidden_dim, num_layers, num_heads)
     return model
 
 
@@ -376,7 +376,7 @@ class IPlannerTiny(nn.Module):
 def _test():
     # 简易单元测试
     B, L, C = 2, 128, 512
-    m = I_predictor(embed_dim=C)
+    m = GuidanceInjector(embed_dim=C)
     x = torch.randn(B, L, C)
     out = m(x)
     assert out.shape == (B, C)

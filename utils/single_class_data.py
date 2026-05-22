@@ -1,5 +1,5 @@
 """
-🎯 AGIP-VAR单分类验证数据集
+🎯 AID-VAR单分类验证数据集
 专门为验证框架有效性设计的轻量级数据加载器
 """
 
@@ -22,7 +22,7 @@ class SingleClassImageNetDataset(Dataset):
     """
     严格单分类ImageNet数据集 - 仅支持Golden Retriever (类别ID 207)
     
-    🎯 严格单分类模式：专门为AGIP-VAR框架验证设计
+    🎯 严格单分类模式：专门为AID-VAR框架验证设计
     - 只支持类别ID 207 (Golden Retriever) 
     - 确保训练和验证数据的一致性
     - 防止意外使用多类别数据

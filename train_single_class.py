@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-🎯 AGIP-VAR单分类训练脚本 - 适配最新架构
-专门用于在ImageNet单个分类上验证AGIP-VAR框架有效性
+🎯 AID-VAR单分类训练脚本 - 适配最新架构
+专门用于在ImageNet单个分类上验证AID-VAR框架有效性
 包括：分阶段训练、空间感知规划词元图、判别器准确率监控等
 
 🔄 检查点恢复功能:
@@ -15,11 +15,11 @@
   
   # 从检查点恢复训练
   python train_single_class.py --class_id 207 --num_epochs 100 \
-    --resume_checkpoint single_class_experiments/agip_var_class_207_staged_20241219_143021/checkpoints/checkpoint_epoch_10.pth
+    --resume_checkpoint single_class_experiments/aid_var_class_207_staged_20241219_143021/checkpoints/checkpoint_epoch_10.pth
   
   # 从最佳检查点恢复训练
   python train_single_class.py --class_id 207 --num_epochs 100 \
-    --resume_checkpoint single_class_experiments/agip_var_class_207_staged_20241219_143021/checkpoints/best_checkpoint.pth
+    --resume_checkpoint single_class_experiments/aid_var_class_207_staged_20241219_143021/checkpoints/best_checkpoint.pth
 """
 
 import os
@@ -42,20 +42,20 @@ if stylegan_path not in sys.path:
 
 # 导入项目模块
 from models import build_vae_var
-from models.planning_module import I_predictor
+from models.guidance_injector import GuidanceInjector
 from models.discriminator_adapter import StyleGANDiscriminatorAdapter
 from trainer_planner import PlannerTrainer
 from utils.single_class_data import create_single_class_dataloaders
 from utils.amp_sc import AmpOptimizer
 from utils.misc import MetricLogger, TensorboardLogger
-import agip_helpers
+import aid_helpers
 
 # 配置日志 - 将在setup_experiment_dir后重新配置到正确路径
 logger = logging.getLogger(__name__)
 
 @dataclass
 class SingleClassTrainingConfig:
-    """AGIP-VAR单类训练配置"""
+    """AID-VAR单类训练配置"""
     
     # 基础配置
     DEVICE: str = 'cuda'
@@ -76,14 +76,14 @@ class SingleClassTrainingConfig:
     NUM_WORKERS: int = 4
     
     # 🔥 关键修复：统一学习率，避免训练动态失衡
-    LEARNING_RATE_PLANNER: float = 5e-06       # I_predictor学习率
+    LEARNING_RATE_PLANNER: float = 5e-06       # GuidanceInjector学习率
     LEARNING_RATE_DISCRIMINATOR: float = 1e-06  # 🔥 修复：统一学习率，消除4倍差异导致的动态失衡
     
     # 梯度裁剪
     CLIP_PLANNER: float = 0.5   # 🔥 修复：更保守的梯度裁剪
     CLIP_DISCRIMINATOR: float = 0.5  # 🔥 修复：更保守的梯度裁剪
     
-    # AGIP-VAR超参数
+    # AID-VAR超参数
     LAMBDA_REC: float = 0.01  # 重构损失权重
     GUIDANCE_WEIGHT: float = 0.005  # 🔥 修复：更保守的初始引导权重
     GUIDANCE_TARGET_WEIGHT: float = 0.001  # 🔥 修复：固定引导权重为0.001
@@ -106,7 +106,7 @@ class SingleClassTrainingConfig:
     # VAR相关
     PATCH_NUMS: tuple = (1, 2, 3, 4, 5, 6, 8, 10, 13, 16)  # VAR的多尺度
     
-    # I_predictor架构 - 动态根据VAR深度调整
+    # GuidanceInjector架构 - 动态根据VAR深度调整
     PLANNER_LAYERS: int = 2
     PLANNER_DIM: int = 1024  # 将根据VAR_DEPTH自动计算：depth * 64
     PLANNER_HEADS: int = 8
@@ -146,14 +146,14 @@ class SingleClassTrainingConfig:
         
         logger.info(f"🔧 单分类训练配置已更新为d{depth}模型:")
         logger.info(f"   VAR深度: {self.VAR_DEPTH}")
-        logger.info(f"   I_predictor维度: {self.PLANNER_DIM}")
+        logger.info(f"   GuidanceInjector维度: {self.PLANNER_DIM}")
         logger.info(f"   VAR权重路径: {self.VAR_CKPT}")
 
 def setup_experiment_dir(config: SingleClassTrainingConfig) -> str:
     """设置实验目录并配置日志"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     staged_suffix = "staged" if config.ENABLE_STAGED_TRAINING else "joint"
-    exp_name = f"agip_var_class_{config.CLASS_ID}_{staged_suffix}_{timestamp}"
+    exp_name = f"aid_var_class_{config.CLASS_ID}_{staged_suffix}_{timestamp}"
     exp_dir = os.path.join(config.OUTPUT_DIR, exp_name)
     
     os.makedirs(exp_dir, exist_ok=True)
@@ -183,8 +183,8 @@ def setup_experiment_dir(config: SingleClassTrainingConfig) -> str:
     return exp_dir
 
 def load_models(config: SingleClassTrainingConfig) -> Tuple[nn.Module, nn.Module, nn.Module, nn.Module]:
-    """加载所有模型 - 适配AGIP-VAR架构"""
-    logger.info("📦 加载AGIP-VAR模型架构...")
+    """加载所有模型 - 适配AID-VAR架构"""
+    logger.info("📦 加载AID-VAR模型架构...")
     
     # 🔥 重要修复：使用正确的VQ-VAE配置参数
     # 根据vae_ch160v4096z32.pth的实际配置
@@ -243,8 +243,8 @@ def load_models(config: SingleClassTrainingConfig) -> Tuple[nn.Module, nn.Module
     logger.info(f"   VAR word_embed输入维度: {var.word_embed.in_features}")  # 应该是32
     logger.info(f"   VAR word_embed输出维度: {var.word_embed.out_features}")  # 应该是1024
     
-    # 创建AGIP-VAR组件 - 🔥 使用VAR的实际嵌入维度
-    planner = I_predictor(
+    # 创建AID-VAR组件 - 🔥 使用VAR的实际嵌入维度
+    planner = GuidanceInjector(
         input_dim=var.C,  # VAR的特征维度 (动态：16*64=1024 或 20*64=1280)
         embed_dim=var.C,  # 规划器嵌入维度与VAR保持一致
         num_layers=config.PLANNER_LAYERS,
@@ -264,8 +264,8 @@ def load_models(config: SingleClassTrainingConfig) -> Tuple[nn.Module, nn.Module
     disc_params = sum(p.numel() for p in discriminator.parameters() if p.requires_grad)
     total_params = planner_params + disc_params
     
-    logger.info(f"📊 AGIP-VAR可训练参数统计:")
-    logger.info(f"   I_predictor: {planner_params:,} 参数 ({planner_params/1e6:.2f}M)")
+    logger.info(f"📊 AID-VAR可训练参数统计:")
+    logger.info(f"   GuidanceInjector: {planner_params:,} 参数 ({planner_params/1e6:.2f}M)")
     logger.info(f"   Discriminator: {disc_params:,} 参数 ({disc_params/1e6:.2f}M)")
     logger.info(f"   总计: {total_params:,} 参数 ({total_params/1e6:.2f}M)")
     logger.info(f"🎯 模式: 空间感知规划词元图（逐位置相加）")
@@ -274,7 +274,7 @@ def load_models(config: SingleClassTrainingConfig) -> Tuple[nn.Module, nn.Module
 
 def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: SingleClassTrainingConfig) -> Tuple[AmpOptimizer, AmpOptimizer]:
     """创建优化器"""
-    logger.info("⚙️ 创建AGIP-VAR优化器...")
+    logger.info("⚙️ 创建AID-VAR优化器...")
     
     # 获取可训练参数
     planner_params = list(planner.parameters())
@@ -298,11 +298,11 @@ def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: Sing
     planner_param_count = sum(p.numel() for p in planner_params) / 1e6
     disc_param_count = sum(p.numel() for p in disc_trainable_params) / 1e6
     logger.info(f"📊 可训练参数统计:")
-    logger.info(f"   I_predictor: {planner_param_count:.2f}M 参数")
+    logger.info(f"   GuidanceInjector: {planner_param_count:.2f}M 参数")
     logger.info(f"   StyleGAN-T Discriminator (heads only): {disc_param_count:.2f}M 参数")
     logger.info(f"   🎯 ADD风格: 冻结DINO backbone + 训练判别器heads")
     
-    # 创建AmpOptimizer - I_predictor
+    # 创建AmpOptimizer - GuidanceInjector
     amp_planner_opt = AmpOptimizer(
         mixed_precision=0,  # 使用float32
         optimizer=torch.optim.AdamW(
@@ -333,7 +333,7 @@ def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: Sing
     )
     
     logger.info(f"✅ AmpOptimizer创建完成")
-    logger.info(f"   I_predictor学习率: {config.LEARNING_RATE_PLANNER}")
+    logger.info(f"   GuidanceInjector学习率: {config.LEARNING_RATE_PLANNER}")
     logger.info(f"   Discriminator学习率: {config.LEARNING_RATE_DISCRIMINATOR}")
     
     return amp_planner_opt, amp_disc_opt
@@ -364,12 +364,12 @@ def create_data_loaders(config: SingleClassTrainingConfig) -> Tuple[DataLoader, 
 
 def train_single_class(config: SingleClassTrainingConfig) -> str:
     """
-    执行AGIP-VAR单分类训练
+    执行AID-VAR单分类训练
     
     Returns:
         exp_dir: 实验目录路径
     """
-    logger.info("🚀 开始AGIP-VAR单分类训练...")
+    logger.info("🚀 开始AID-VAR单分类训练...")
     logger.info(f"   类别ID: {config.CLASS_ID}")
     logger.info(f"   设备: {config.DEVICE}")
     logger.info(f"   批次大小: {config.BATCH_SIZE}")
@@ -391,7 +391,7 @@ def train_single_class(config: SingleClassTrainingConfig) -> str:
     # 创建数据加载器
     train_loader, val_loader = create_data_loaders(config)
     
-    # 创建AGIP-VAR训练器
+    # 创建AID-VAR训练器
     trainer = PlannerTrainer(
         device=config.DEVICE,
         vae=vqvae,
@@ -419,7 +419,7 @@ def train_single_class(config: SingleClassTrainingConfig) -> str:
     # 设置TensorBoard日志
     tb_log_dir = os.path.join(exp_dir, "logs", "tensorboard")
     os.makedirs(tb_log_dir, exist_ok=True)
-    tb_logger = TensorboardLogger(log_dir=tb_log_dir, filename_suffix='agip_var_single_class')
+    tb_logger = TensorboardLogger(log_dir=tb_log_dir, filename_suffix='aid_var_single_class')
     
     # 检查是否需要从checkpoint恢复
     start_epoch = 0
@@ -486,7 +486,7 @@ def train_single_class(config: SingleClassTrainingConfig) -> str:
         for key, value in train_metrics.items():
             tb_logger.update(head='train', step=epoch, **{key: value})
     
-    logger.info(f"🎉 AGIP-VAR单分类训练完成！")
+    logger.info(f"🎉 AID-VAR单分类训练完成！")
     logger.info(f"📁 实验结果保存在: {exp_dir}")
     
     return exp_dir
@@ -526,7 +526,7 @@ def train_one_epoch(
     num_batches = len(train_loader)
     
     for batch_idx, (images, labels) in enumerate(train_loader):
-        # 执行AGIP-VAR逐尺度训练步骤
+        # 执行AID-VAR逐尺度训练步骤
         step_metrics = trainer.train_step(images, labels, metric_logger)
         
         # 🔥 修复：直接使用trainer返回的正确指标名称
@@ -663,9 +663,9 @@ def load_checkpoint(
     
     Args:
         checkpoint_path: 检查点文件路径
-        planner: I_predictor模型
+        planner: GuidanceInjector模型
         discriminator: 判别器模型
-        planner_optimizer: I_predictor优化器
+        planner_optimizer: GuidanceInjector优化器
         discriminator_optimizer: 判别器优化器
         device: 设备
         trainer: PlannerTrainer实例（可选，用于恢复内部状态）
@@ -683,7 +683,7 @@ def load_checkpoint(
     
     # 恢复模型状态
     try:
-        # 对于I_predictor，使用strict=False来允许位置编码buffer的差异
+        # 对于GuidanceInjector，使用strict=False来允许位置编码buffer的差异
         # 这些buffer会在首次使用时自动创建
         missing_keys, unexpected_keys = planner.load_state_dict(checkpoint['planner_state_dict'], strict=False)
         if unexpected_keys:
@@ -696,9 +696,9 @@ def load_checkpoint(
                 logger.warning(f"⚠️ 其他未预期的键: {other_keys}")
         if missing_keys:
             logger.warning(f"⚠️ 缺失的键: {missing_keys}")
-        logger.info("✅ I_predictor模型状态加载成功")
+        logger.info("✅ GuidanceInjector模型状态加载成功")
     except Exception as e:
-        logger.error(f"❌ I_predictor模型状态加载失败: {e}")
+        logger.error(f"❌ GuidanceInjector模型状态加载失败: {e}")
         raise
     
     try:
@@ -711,9 +711,9 @@ def load_checkpoint(
     # 恢复优化器状态
     try:
         planner_optimizer.load_state_dict(checkpoint['planner_optimizer_state_dict'])
-        logger.info("✅ I_predictor优化器状态加载成功")
+        logger.info("✅ GuidanceInjector优化器状态加载成功")
     except Exception as e:
-        logger.warning(f"⚠️ I_predictor优化器状态加载失败，将使用默认状态: {e}")
+        logger.warning(f"⚠️ GuidanceInjector优化器状态加载失败，将使用默认状态: {e}")
     
     try:
         discriminator_optimizer.load_state_dict(checkpoint['discriminator_optimizer_state_dict'])
@@ -761,7 +761,7 @@ def load_checkpoint(
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='AGIP-VAR单分类训练')
+    parser = argparse.ArgumentParser(description='AID-VAR单分类训练')
     
     # 数据配置
     parser.add_argument('--data_root', type=str, default=SingleClassTrainingConfig.DATA_ROOT,
@@ -777,7 +777,7 @@ def main():
     parser.add_argument('--device', type=str, default=SingleClassTrainingConfig.DEVICE,
                        help='训练设备')
     
-    # AGIP-VAR配置
+    # AID-VAR配置
     parser.add_argument('--var_depth', type=int, default=SingleClassTrainingConfig.VAR_DEPTH,
                        help='VAR模型深度: 16/20/24')
     parser.add_argument('--warmup_steps', type=int, default=SingleClassTrainingConfig.WARMUP_STEPS,

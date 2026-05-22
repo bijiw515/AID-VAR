@@ -191,7 +191,7 @@ class VAR(nn.Module):
         return self.vae_proxy[0].fhat_to_img(f_hat).add_(1).mul_(0.5)   # de-normalize, from [-1, 1] to [0, 1]
      
     @torch.no_grad()
-    def agip_guided_inference(
+    def aid_guided_inference(
         self, 
         planner, 
         B: int, 
@@ -202,15 +202,15 @@ class VAR(nn.Module):
         g_seed: Optional[int] = None,
         more_smooth=False
     ) -> torch.Tensor:
-        """AGIP-VAR引导推理：VAR + I_predictor引导生成
+        """AID-VAR引导推理：VAR + GuidanceInjector引导生成
         
-        完全按照autoregressive_infer_cfg的模式实现，但加入了I_predictor引导：
+        完全按照autoregressive_infer_cfg的模式实现，但加入了GuidanceInjector引导：
         1. 基于前一尺度VAR生成的tokens实时生成引导
         2. 引导token直接相加注入，与训练时保持一致
         3. 支持CFG但对引导token也进行相应处理
         
         Args:
-            planner: I_predictor模块
+            planner: GuidanceInjector模块
             B: 批次大小
             label_B: 类别标签
             cfg: 分类器无关引导强度
@@ -273,7 +273,7 @@ class VAR(nn.Module):
                         prev_features = torch.clamp(prev_features, min=-10.0, max=10.0)
                         prev_features = prev_features.detach().clone().requires_grad_(False)
                         
-                        # 使用I_predictor生成引导tokens - 与训练时完全一致
+                        # 使用GuidanceInjector生成引导tokens - 与训练时完全一致
                         guidance_tokens = planner(prev_features, target_patch_num=pn)  # (B, pn*pn, C)
                         
                         if guidance_tokens is not None:
@@ -340,7 +340,7 @@ class VAR(nn.Module):
             
         except Exception as e:
             # 出错时的fallback：使用标准VAR推理
-            print(f"AGIP-VAR inference failed: {e}, falling back to standard VAR")
+            print(f"AID-VAR inference failed: {e}, falling back to standard VAR")
             for b in self.blocks: 
                 b.attn.kv_caching(False)
             return self.autoregressive_infer_cfg(B=B, label_B=label_B, cfg=cfg, top_k=top_k, top_p=top_p, g_seed=g_seed, more_smooth=more_smooth)

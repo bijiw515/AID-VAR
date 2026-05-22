@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-AGIP-VAR FID评估样本生成脚本
-基于原始generate_fid_samples.py，但使用AGIP-VAR的引导推理方法
-生成带有I_predictor引导的高质量样本用于FID评估
+AID-VAR FID评估样本生成脚本
+基于原始generate_fid_samples.py，但使用AID-VAR的引导推理方法
+生成带有GuidanceInjector引导的高质量样本用于FID评估
 """
 
 import os
@@ -21,11 +21,11 @@ setattr(torch.nn.Linear, 'reset_parameters', lambda self: None)
 setattr(torch.nn.LayerNorm, 'reset_parameters', lambda self: None)
 
 from models import build_vae_var
-from models.planning_module import I_predictor
+from models.guidance_injector import GuidanceInjector
 from utils.misc import create_npz_from_sample_folder
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Generate 50K AGIP-VAR guided images for FID evaluation')
+    parser = argparse.ArgumentParser(description='Generate 50K AID-VAR guided images for FID evaluation')
     parser.add_argument('--model_depth', type=int, default=16, choices=[16, 20, 24, 30],
                         help='VAR model depth (default: 16)')
     parser.add_argument('--cfg', type=float, default=1.5,
@@ -34,9 +34,9 @@ def parse_args():
                         help='Top-p sampling parameter (default: 0.96)')
     parser.add_argument('--top_k', type=int, default=900,
                         help='Top-k sampling parameter (default: 900)')
-    parser.add_argument('--more_smooth', action='store_true',
+    parser.add_argument('--more_smooth', action='store_true',default=True,
                         help='Enable more_smooth for better visual quality')
-    parser.add_argument('--output_dir', type=str, default='agip_fid_samples',
+    parser.add_argument('--output_dir', type=str, default='aid_fid_samples',
                         help='Output directory for generated samples')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to use (default: cuda)')
@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument('--var_ckpt', type=str, default=None,
                         help='VAR checkpoint path (auto-determined if None)')
     parser.add_argument('--planner_ckpt', type=str, required=True,
-                        help='I_predictor checkpoint path')
+                        help='GuidanceInjector checkpoint path')
     parser.add_argument('--create_npz', action='store_true',
                         help='Create .npz file after generation')
     parser.add_argument('--save_format', type=str, default='png', choices=['png', 'npz', 'both'],
@@ -69,8 +69,8 @@ def download_checkpoints(vae_ckpt, var_ckpt):
         os.system(f'wget {hf_home}/{var_ckpt}')
 
 def setup_models(args):
-    """设置VAE、VAR和I_predictor模型"""
-    print(f"Setting up AGIP-VAR models...")
+    """设置VAE、VAR和GuidanceInjector模型"""
+    print(f"Setting up AID-VAR models...")
     
     # 确定VAR检查点路径
     if args.var_ckpt is None:
@@ -105,23 +105,28 @@ def setup_models(args):
     for p in var.parameters(): 
         p.requires_grad_(False)
     
-    # 构建I_predictor
-    print(f"Building I_predictor...")
-    planner = I_predictor(
-        input_dim=1024,    # VAR的嵌入维度
-        embed_dim=1024,
+    # 构建GuidanceInjector
+    print(f"Building GuidanceInjector...")
+    
+    # 根据VAR模型深度计算正确的嵌入维度（与build_vae_var保持一致）
+    var_embed_dim = args.model_depth * 64  # width = depth * 64
+    print(f"GuidanceInjector configuration: VAR depth={args.model_depth}, embed_dim={var_embed_dim}")
+    
+    planner = GuidanceInjector(
+        input_dim=var_embed_dim,    # VAR的嵌入维度（根据深度动态计算）
+        embed_dim=var_embed_dim,    # 保持一致
         num_layers=2,
         num_heads=8
     ).to(device)
     
-    # 加载I_predictor检查点
-    print(f"Loading I_predictor checkpoint: {args.planner_ckpt}")
+    # 加载GuidanceInjector检查点
+    print(f"Loading GuidanceInjector checkpoint: {args.planner_ckpt}")
     if not osp.exists(args.planner_ckpt):
-        raise FileNotFoundError(f"I_predictor checkpoint not found: {args.planner_ckpt}")
+        raise FileNotFoundError(f"GuidanceInjector checkpoint not found: {args.planner_ckpt}")
     
     planner_state = torch.load(args.planner_ckpt, map_location='cpu')
     
-    # 🔥 修复：正确的I_predictor权重加载方式，与train_planner.py保持一致
+    # 🔥 修复：正确的GuidanceInjector权重加载方式，与train_planner.py保持一致
     if 'planner_state_dict' in planner_state:
         # 从完整的训练检查点加载
         missing_keys, unexpected_keys = planner.load_state_dict(planner_state['planner_state_dict'], strict=False)
@@ -134,42 +139,42 @@ def setup_models(args):
                 print(f"⚠️ 其他未预期的键: {other_keys}")
         if missing_keys:
             print(f"⚠️ 缺失的键: {missing_keys}")
-        print("✅ I_predictor模型状态从训练检查点加载成功")
+        print("✅ GuidanceInjector模型状态从训练检查点加载成功")
     elif 'planner' in planner_state:
         # 从旧格式的检查点加载
         planner.load_state_dict(planner_state['planner'], strict=True)
-        print("✅ I_predictor模型状态从旧格式检查点加载成功")
+        print("✅ GuidanceInjector模型状态从旧格式检查点加载成功")
     else:
         # 直接加载模型权重
         planner.load_state_dict(planner_state, strict=True)
-        print("✅ I_predictor模型状态直接加载成功")
+        print("✅ GuidanceInjector模型状态直接加载成功")
     
     planner.eval()
     for p in planner.parameters():
         p.requires_grad_(False)
     
-    print(f"AGIP-VAR models loaded successfully!")
+    print(f"AID-VAR models loaded successfully!")
     print(f"  📦 VAE parameters: {sum(p.numel() for p in vae.parameters()):,}")
     print(f"  🧠 VAR parameters: {sum(p.numel() for p in var.parameters()):,}")
-    print(f"  🎯 I_predictor parameters: {sum(p.numel() for p in planner.parameters()):,}")
+    print(f"  🎯 GuidanceInjector parameters: {sum(p.numel() for p in planner.parameters()):,}")
     
     return vae, var, planner, device
 
-def generate_agip_samples(var, planner, device, args):
-    """使用AGIP-VAR生成50,000个引导样本"""
-    print(f"\n🎯 Generating 50,000 AGIP-VAR guided samples for FID evaluation...")
+def generate_aid_samples(var, planner, device, args):
+    """使用AID-VAR生成50,000个引导样本"""
+    print(f"\n🎯 Generating 50,000 AID-VAR guided samples for FID evaluation...")
     print(f"Parameters: cfg={args.cfg}, top_p={args.top_p}, top_k={args.top_k}, more_smooth={args.more_smooth}")
     print(f"Save format: {args.save_format}")
     
     # 硬编码配置
-    batch_size = 50  # 固定批次大小
-    samples_per_class = 50  # 每类固定样本数
+    batch_size = 10  # 固定批次大小
+    samples_per_class = 10  # 每类固定样本数
     
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     sample_folder = f"{args.output_dir}_d{args.model_depth}_{timestamp}"
     os.makedirs(sample_folder, exist_ok=True)
-    print(f"Saving AGIP-VAR samples to: {sample_folder}")
+    print(f"Saving AID-VAR samples to: {sample_folder}")
     
     # 初始化直接NPZ保存的数组
     if args.save_format in ['npz', 'both']:
@@ -195,7 +200,7 @@ def generate_agip_samples(var, planner, device, args):
     num_classes = 1000
     
     # 逐类生成样本
-    for class_id in tqdm(range(num_classes), desc="Generating AGIP-VAR classes"):
+    for class_id in tqdm(range(num_classes), desc="Generating AID-VAR classes"):
         # 为每个类设置种子以确保可重现性
         torch.manual_seed(class_id)
         random.seed(class_id)
@@ -210,8 +215,8 @@ def generate_agip_samples(var, planner, device, args):
         
         with torch.inference_mode():
             with torch.autocast(device.type, enabled=True, dtype=dtype, cache_enabled=True):
-                # 使用AGIP-VAR引导生成
-                recon_B3HW = var.agip_guided_inference(
+                # 使用AID-VAR引导生成
+                recon_B3HW = var.aid_guided_inference(
                     planner=planner,
                     B=current_batch_size, 
                     label_B=label_B, 
@@ -240,7 +245,7 @@ def generate_agip_samples(var, planner, device, args):
                         img_pil = PImage.fromarray(img_np)
                         
                         # 保存为PNG（按官方指导）
-                        img_path = os.path.join(sample_folder, f"agip_sample_{total_samples:05d}.png")
+                        img_path = os.path.join(sample_folder, f"aid_sample_{total_samples:05d}.png")
                         img_pil.save(img_path, "PNG")
                     
                     total_samples += 1
@@ -251,22 +256,22 @@ def generate_agip_samples(var, planner, device, args):
         
         # 每100个类更新进度
         if (class_id + 1) % 100 == 0:
-            print(f"✅ Completed {class_id + 1}/{num_classes} classes, {total_samples} total AGIP-VAR samples")
+            print(f"✅ Completed {class_id + 1}/{num_classes} classes, {total_samples} total AID-VAR samples")
     
-    print(f"\n🎉 AGIP-VAR generation completed! Total samples: {total_samples}")
+    print(f"\n🎉 AID-VAR generation completed! Total samples: {total_samples}")
     
     # 保存直接NPZ文件（如果需要）
     if args.save_format in ['npz', 'both']:
         print(f"💾 Saving direct NPZ file (no PNG compression loss)...")
         all_samples_array = np.stack(all_samples, axis=0)  # Shape: (50000, H, W, C)
-        npz_path = f"{sample_folder}_agip_direct.npz"
+        npz_path = f"{sample_folder}_aid_direct.npz"
         
         # 保存为标准FID评估格式
         np.savez_compressed(npz_path, 
                           arr_0=all_samples_array,  # 主要数组
                           samples=all_samples_array)  # 兼容性别名
         
-        print(f"✅ Direct AGIP-VAR NPZ file saved: {npz_path}")
+        print(f"✅ Direct AID-VAR NPZ file saved: {npz_path}")
         print(f"   Shape: {all_samples_array.shape}")
         print(f"   Dtype: {all_samples_array.dtype}")
         print(f"   Value range: [{all_samples_array.min():.3f}, {all_samples_array.max():.3f}]")
@@ -275,15 +280,15 @@ def generate_agip_samples(var, planner, device, args):
         del all_samples_array
         del all_samples
     
-    print(f"📁 AGIP-VAR samples folder: {sample_folder}")
+    print(f"📁 AID-VAR samples folder: {sample_folder}")
     return sample_folder
 
 def main():
     args = parse_args()
     
     print("="*80)
-    print("🎯 AGIP-VAR FID评估样本生成")
-    print("🚀 使用I_predictor引导的高质量图像生成")
+    print("🎯 AID-VAR FID评估样本生成")
+    print("🚀 使用GuidanceInjector引导的高质量图像生成")
     print("="*80)
     print(f"Model depth: {args.model_depth}")
     print(f"Batch size: 50 (hardcoded)")
@@ -293,7 +298,7 @@ def main():
     print(f"Random seed: class_id for each class (reproducible)")
     print(f"Save format: {args.save_format}")
     print(f"Output directory: {args.output_dir}")
-    print(f"I_predictor checkpoint: {args.planner_ckpt}")
+    print(f"GuidanceInjector checkpoint: {args.planner_ckpt}")
     print(f"Device: {args.device}")
     print("="*80)
     
@@ -301,8 +306,8 @@ def main():
         # 设置模型
         vae, var, planner, device = setup_models(args)
         
-        # 生成AGIP-VAR引导样本
-        sample_folder = generate_agip_samples(var, planner, device, args)
+        # 生成AID-VAR引导样本
+        sample_folder = generate_aid_samples(var, planner, device, args)
         
         # 创建NPZ文件（如果需要）
         if args.create_npz:
@@ -313,19 +318,19 @@ def main():
             print(f"\n💡 To create .npz file later, run:")
             print(f"python -c \"from utils.misc import create_npz_from_sample_folder; create_npz_from_sample_folder('{sample_folder}')\"")
         
-        print(f"\n🎉 AGIP-VAR FID sample generation completed successfully!")
+        print(f"\n🎉 AID-VAR FID sample generation completed successfully!")
         print(f"📁 Sample folder: {sample_folder}")
         if args.create_npz:
             print(f"📦 NPZ file: {sample_folder}.npz")
         
-        print(f"\n📊 Next steps for AGIP-VAR FID evaluation:")
+        print(f"\n📊 Next steps for AID-VAR FID evaluation:")
         print(f"1. Compare with baseline VAR FID samples")
         print(f"2. Use OpenAI's FID evaluation toolkit")
         print(f"3. Evaluate FID, IS, precision, and recall improvements")
-        print(f"4. Analyze quality enhancement from I_predictor guidance")
+        print(f"4. Analyze quality enhancement from GuidanceInjector guidance")
         
     except Exception as e:
-        print(f"❌ Error during AGIP-VAR generation: {e}")
+        print(f"❌ Error during AID-VAR generation: {e}")
         import traceback
         traceback.print_exc()
 

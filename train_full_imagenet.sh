@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ===============================================
-# 🎯 AGIP-VAR 完整ImageNet多卡分布式训练脚本
+# 🎯 AID-VAR 完整ImageNet多卡分布式训练脚本
 # 基于train_single_class.sh的成功架构，扩展到完整ImageNet和多卡训练
 # ===============================================
 
@@ -58,7 +58,7 @@ log_error() {
 }
 
 log_blue() {
-    echo -e "${BLUE}[AGIP-VAR]${NC} $1"
+    echo -e "${BLUE}[AID-VAR]${NC} $1"
 }
 
 log_cyan() {
@@ -97,15 +97,15 @@ VQVAE_CKPT="./vae_ch160v4096z32.pth"       # VQVAE权重
 # d16: 1024维, d20: 1280维, d24: 1536维
 log_info "🎯 当前选择: VAR-d${VAR_DEPTH} (嵌入维度: $((VAR_DEPTH * 64)))"
 
-# AGIP-VAR特定配置 - 根据总GPU数动态计算
+# AID-VAR特定配置 - 根据总GPU数动态计算
 # 🔥 关键配置：设置WARMUP_STEPS为一个epoch的步数
 STEPS_PER_EPOCH=$((1281167 / GLOBAL_BATCH_SIZE))  # 每epoch步数：ImageNet训练样本数 / 全局批次大小
 WARMUP_STEPS=0              # 判别器预热步数 (1个epoch)
 ENABLE_STAGED_TRAINING=true                # 启用分阶段训练
-LAMBDA_REC=0.01                               # 重建损失权重
+LAMBDA_REC=0                               # 重建损失权重
 
 # 优化器配置 - 🔥 与单分类训练完全相同的参数
-LR_PLANNER=1e-6                            # I_predictor学习率
+LR_PLANNER=1e-6                            # GuidanceInjector学习率
 LR_DISCRIMINATOR=1e-6                      # 判别器学习率（统一学习率）
 
 # 🔥 关键修复：统一学习率，避免训练动态失衡
@@ -284,7 +284,7 @@ setup_environment() {
     
     # 激活conda环境
     source /home/intern/miniconda3/etc/profile.d/conda.sh
-    conda activate agip-var
+    conda activate aid-var
     
     export TMPDIR=/home/intern/tmp
 
@@ -353,9 +353,9 @@ setup_environment() {
 # --------- 显示配置信息 ---------
 show_configuration() {
     if [ "$NNODES" -gt 1 ]; then
-        log_blue "==================== AGIP-VAR 多机多卡分布式训练配置 ===================="
+        log_blue "==================== AID-VAR 多机多卡分布式训练配置 ===================="
     else
-        log_blue "==================== AGIP-VAR 单机多卡分布式训练配置 ===================="
+        log_blue "==================== AID-VAR 单机多卡分布式训练配置 ===================="
     fi
     log_blue "🌐 分布式配置:"
     log_blue "   节点总数: $NNODES"
@@ -379,11 +379,11 @@ show_configuration() {
     log_blue "   VAR深度: $DEPTH"
     log_blue "   多尺度配置: $PATCH_NUMS"
     log_blue ""
-    log_blue "🎯 AGIP-VAR配置:"
+    log_blue "🎯 AID-VAR配置:"
     log_blue "   预热步数: $WARMUP_STEPS (1个epoch)"
     log_blue "   分阶段训练: $ENABLE_STAGED_TRAINING"
     log_blue "   重建损失权重: $LAMBDA_REC"
-    log_blue "   I_predictor学习率: $LR_PLANNER"
+    log_blue "   GuidanceInjector学习率: $LR_PLANNER"
     log_blue "   判别器学习率: $LR_DISCRIMINATOR"
     log_blue "   引导权重: $GUIDANCE_WEIGHT"
     log_blue "   目标引导权重: $GUIDANCE_TARGET_WEIGHT"
@@ -405,7 +405,7 @@ show_configuration() {
 
 # --------- 启动分布式训练 ---------
 start_training() {
-    log_info "🚀 启动AGIP-VAR完整ImageNet 8卡分布式训练..."
+    log_info "🚀 启动AID-VAR完整ImageNet 8卡分布式训练..."
     
     # 生成时间戳
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -439,7 +439,7 @@ start_training() {
         log_info "🔄 将从检查点恢复训练: $RESUME_CHECKPOINT"
     fi
     
-    # 🔥 添加AGIP-VAR新参数支持
+    # 🔥 添加AID-VAR新参数支持
     if [ -n "$LR_PLANNER" ]; then
         PYTHON_CMD="$PYTHON_CMD --lr_planner=$LR_PLANNER"
     fi
@@ -472,7 +472,7 @@ start_training() {
     echo "  训练轮数: $NUM_EPOCHS" >> "$LOG_FILE"
     echo "  分阶段训练: $ENABLE_STAGED_TRAINING" >> "$LOG_FILE"
     echo "  预热步数: $WARMUP_STEPS (1个epoch)" >> "$LOG_FILE"
-    echo "  I_predictor学习率: $LR_PLANNER" >> "$LOG_FILE"
+    echo "  GuidanceInjector学习率: $LR_PLANNER" >> "$LOG_FILE"
     echo "  判别器学习率: $LR_DISCRIMINATOR" >> "$LOG_FILE"
     echo "================================" >> "$LOG_FILE"
     
@@ -550,10 +550,10 @@ main() {
     detect_cluster_environment
     
     if [ "$NNODES" -gt 1 ]; then
-        log_cyan "🌐 AGIP-VAR多机多卡分布式训练启动脚本"
+        log_cyan "🌐 AID-VAR多机多卡分布式训练启动脚本"
         log_cyan "   节点${NODE_RANK}/${NNODES} | 总GPU数: ${TOTAL_GPUS}"
     else
-        log_blue "🔥 AGIP-VAR单机多卡分布式训练启动脚本"
+        log_blue "🔥 AID-VAR单机多卡分布式训练启动脚本"
     fi
     log_cyan "================================================================"
     
@@ -592,16 +592,16 @@ main() {
     
     # 完成
     if [ "$NNODES" -gt 1 ]; then
-        log_blue "🎉 节点${NODE_RANK} AGIP-VAR多机分布式训练脚本执行完成！"
+        log_blue "🎉 节点${NODE_RANK} AID-VAR多机分布式训练脚本执行完成！"
     else
-        log_blue "🎉 AGIP-VAR单机多卡分布式训练脚本执行完成！"
+        log_blue "🎉 AID-VAR单机多卡分布式训练脚本执行完成！"
     fi
 }
 
 # --------- 帮助信息 ---------
 show_help() {
     cat << EOF
-�� AGIP-VAR完整ImageNet 8卡分布式训练脚本使用说明
+�� AID-VAR完整ImageNet 8卡分布式训练脚本使用说明
 
 用法: $0 [选项]
 
@@ -620,8 +620,8 @@ show_help() {
   --port              设置主节点端口 (默认: $MASTER_PORT)
   -y, --yes           自动确认，不询问
 
-AGIP-VAR特定选项:
-  --lr-planner        I_predictor学习率 (默认: $LR_PLANNER)
+AID-VAR特定选项:
+  --lr-planner        GuidanceInjector学习率 (默认: $LR_PLANNER)
   --lr-discriminator  判别器学习率 (默认: $LR_DISCRIMINATOR)
   --guidance-weight   引导权重 (默认: $GUIDANCE_WEIGHT)
   --r1-gamma          R1梯度惩罚权重 (默认: $R1_GAMMA)

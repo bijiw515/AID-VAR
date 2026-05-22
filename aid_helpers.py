@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-🎯 AGIP-VAR 训练辅助函数模块
+🎯 AID-VAR 训练辅助函数模块
 
-包含AGIP-VAR训练过程中使用的各种辅助函数，
+包含AID-VAR训练过程中使用的各种辅助函数，
 从trainer_planner.py中分离出来以保持代码组织的清晰性。
 
 包含功能：
@@ -11,7 +11,6 @@
 - 视觉调试摘要生成
 - 其他训练辅助工具
 """
-
 import os
 import time
 import json
@@ -108,7 +107,7 @@ def save_visual_debugging_samples(
     real_tokens_history: List[torch.Tensor],  # 真实tokens的多尺度历史（必需）
     fake_tokens_history: List[torch.Tensor],  # 假tokens的多尺度历史（必需）
     max_samples: int = 4,
-    guidance_tokens_list: Optional[List[torch.Tensor]] = None  # 🆕 I_predictor生成的引导tokens (注意力特征向量)
+    guidance_tokens_list: Optional[List[torch.Tensor]] = None  # 🆕 GuidanceInjector生成的引导tokens (注意力特征向量)
 ):
     """保存视觉调试样本
     
@@ -127,7 +126,7 @@ def save_visual_debugging_samples(
         real_tokens_history: 真实tokens的多尺度历史列表（必需，用于构建真实样本的完整序列）
         fake_tokens_history: 假tokens的多尺度历史列表（必需，用于构建假样本的完整序列）
         max_samples: 最大保存样本数
-        guidance_tokens_list: 🆕 I_predictor生成的多尺度引导tokens列表 (注意力特征向量形式)
+        guidance_tokens_list: 🆕 GuidanceInjector生成的多尺度引导tokens列表 (注意力特征向量形式)
         
     Note:
         - 真实样本：使用real_tokens_history作为历史 + 当前real_tokens
@@ -668,13 +667,13 @@ def generate_visual_debug_summary(save_dir: str, epoch: int):
                 "- 'real' 样本：真实图像(判别器正样本)"
             )
             summary["discriminator_analysis"]["notes"].append(
-                "- 'fake' 样本：AGIP-VAR生成图像(判别器负样本)"
+                "- 'fake' 样本：AID-VAR生成图像(判别器负样本)"
             )
             summary["discriminator_analysis"]["notes"].append(
                 "- 'std' 样本：标准VAR生成图像(对比基准)"
             )
             summary["discriminator_analysis"]["notes"].append(
-                "- 'guidance' 样本：🆕 I_predictor引导tokens可视化"
+                "- 'guidance' 样本：🆕 GuidanceInjector引导tokens可视化"
             )
             summary["discriminator_analysis"]["notes"].append(
                 "分析要点：1)fake样本是否明显劣于real样本 2)fake样本是否与std样本差异过大 3)🆕 guidance样本展现的规划意图"
@@ -777,7 +776,7 @@ def ensure_debug_dir_exists(save_dir: str, epoch: int) -> str:
 # ============================================================================
 
 class AlternatingTrainingManager:
-    """交替训练管理器 - 管理discriminator和I_predictor的交替更新策略"""
+    """交替训练管理器 - 管理discriminator和GuidanceInjector的交替更新策略"""
     
     def __init__(
         self,
@@ -821,7 +820,7 @@ class AlternatingTrainingManager:
                 if acc_real < 0.6 or acc_fake < 0.6:
                     return (current_step - self.warmup_steps) % 3 != 2  # 2/3时间训练discriminator
                 
-                # 如果discriminator太强，多训练I_predictor
+                # 如果discriminator太强，多训练GuidanceInjector
                 elif acc_real > 0.9 and acc_fake > 0.9:
                     return (current_step - self.warmup_steps) % 4 == 0  # 1/4时间训练discriminator
             
@@ -837,9 +836,9 @@ class AlternatingTrainingManager:
             return (current_step - self.warmup_steps) % 2 == 0
     
     def should_update_planner(self, current_step: int, metrics: Optional[Dict] = None) -> bool:
-        """判断当前步是否应该更新I_predictor"""
+        """判断当前步是否应该更新GuidanceInjector"""
         
-        # 预热阶段：不训练I_predictor
+        # 预热阶段：不训练GuidanceInjector
         if current_step < self.warmup_steps:
             return False
         
@@ -955,7 +954,7 @@ def apply_learning_rate_fix(
     应用学习率修复
     
     Args:
-        opt_planner: I_predictor优化器
+        opt_planner: GuidanceInjector优化器
         opt_disc: discriminator优化器
         base_lr: 基础学习率
         recovery_mode: 是否为恢复模式（降低学习率）

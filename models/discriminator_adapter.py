@@ -24,7 +24,7 @@ try:
 except ImportError as e:
     logger.error(f"❌ StyleGAN-T modules not available: {e}")
     STYLEGAN_AVAILABLE = False
-    raise ImportError("StyleGAN-T is required for AGIP-VAR. No fallback allowed.")
+    raise ImportError("StyleGAN-T is required for AID-VAR. No fallback allowed.")
 
 
 class PixelDiscriminatorAdapter(nn.Module):

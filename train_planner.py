@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 AGIP-VAR完整ImageNet多卡分布式训练脚本
+🎯 AID-VAR完整ImageNet多卡分布式训练脚本
 基于train_single_class.py的成功架构，扩展到完整ImageNet和多卡训练
 包括：分阶段训练、空间感知规划词元图、判别器准确率监控等
 
@@ -15,7 +15,7 @@
   
   # 从检查点恢复训练
   torchrun --nproc_per_node=8 train_planner.py --data_path /path/to/imagenet --num_epochs 100 \
-    --resume_checkpoint experiments/agip_var_full_imagenet_staged_20241219_143021/checkpoints/checkpoint_epoch_10.pth
+    --resume_checkpoint experiments/aid_var_full_imagenet_staged_20241219_143021/checkpoints/checkpoint_epoch_10.pth
 """
 
 import os
@@ -43,7 +43,7 @@ from utils import arg_util, misc
 from utils.data import build_dataset
 from utils.data_sampler import DistInfiniteBatchSampler, EvalDistributedSampler
 from models import build_vae_var
-from models.planning_module import I_predictor
+from models.guidance_injector import GuidanceInjector
 from models.discriminator_adapter import StyleGANDiscriminatorAdapter
 from trainer_planner import PlannerTrainer
 from utils.amp_sc import AmpOptimizer
@@ -53,8 +53,8 @@ from utils.misc import MetricLogger, TensorboardLogger, DistLogger
 logger = logging.getLogger(__name__)
 
 @dataclass
-class AGIPVARTrainingConfig:
-    """AGIP-VAR完整ImageNet训练配置"""
+class AIDVARTrainingConfig:
+    """AID-VAR完整ImageNet训练配置"""
     
     # 基础配置
     DEVICE: str = 'cuda'
@@ -72,15 +72,15 @@ class AGIPVARTrainingConfig:
     NUM_WORKERS: int = 8
     
     # 🔥 关键修复：统一学习率，避免训练动态失衡
-    LEARNING_RATE_PLANNER: float = 1e-06       # I_predictor学习率
+    LEARNING_RATE_PLANNER: float = 1e-06       # GuidanceInjector学习率
     LEARNING_RATE_DISCRIMINATOR: float = 1e-06  # 判别器学习率（与planner统一）
     
     # 梯度裁剪
     CLIP_PLANNER: float = 0.5   # 保守的梯度裁剪
     CLIP_DISCRIMINATOR: float = 0.5  # 保守的梯度裁剪
     
-    # AGIP-VAR超参数
-    LAMBDA_REC: float = 0.01  # 重构损失权重
+    # AID-VAR超参数
+    LAMBDA_REC: float = 0  # 重构损失权重
     GUIDANCE_WEIGHT: float = 0.005  # 保守的初始引导权重
     GUIDANCE_TARGET_WEIGHT: float = 0.001  # 固定引导权重
     GUIDANCE_RAMP_EPOCHS: int = 15  # 渐进增加期
@@ -102,7 +102,7 @@ class AGIPVARTrainingConfig:
     # VAR相关
     PATCH_NUMS: tuple = (1, 2, 3, 4, 5, 6, 8, 10, 13, 16)  # VAR的多尺度
     
-    # I_predictor架构 - 动态根据VAR深度调整
+    # GuidanceInjector架构 - 动态根据VAR深度调整
     PLANNER_LAYERS: int = 2
     PLANNER_DIM: int = VAR_DEPTH * 64  # 将根据VAR_DEPTH自动计算：depth * 64
     PLANNER_HEADS: int = 8
@@ -142,7 +142,7 @@ class AGIPVARTrainingConfig:
         
         logger.info(f"🔧 配置已更新为d{depth}模型:")
         logger.info(f"   VAR深度: {self.VAR_DEPTH}")
-        logger.info(f"   I_predictor维度: {self.PLANNER_DIM}")
+        logger.info(f"   GuidanceInjector维度: {self.PLANNER_DIM}")
         logger.info(f"   VAR权重路径: {self.VAR_CKPT}")
 
 class NullDDP(torch.nn.Module):
@@ -155,14 +155,14 @@ class NullDDP(torch.nn.Module):
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
 
-def setup_experiment_dir(config: AGIPVARTrainingConfig, args) -> str:
+def setup_experiment_dir(config: AIDVARTrainingConfig, args) -> str:
     """设置实验目录并配置日志（仅master进程执行）"""
     if not dist.is_master():
         return ""  # 非master进程返回空字符串
         
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     staged_suffix = "staged" if config.ENABLE_STAGED_TRAINING else "joint"
-    exp_name = f"agip_var_full_imagenet_{staged_suffix}_{timestamp}"
+    exp_name = f"aid_var_full_imagenet_{staged_suffix}_{timestamp}"
     exp_dir = os.path.join(config.OUTPUT_DIR, exp_name)
     
     os.makedirs(exp_dir, exist_ok=True)
@@ -202,10 +202,10 @@ def setup_experiment_dir(config: AGIPVARTrainingConfig, args) -> str:
     logger.info(f"🌐 分布式配置: {dist.get_world_size()}卡, rank={dist.get_rank()}")
     return exp_dir
 
-def load_models(config: AGIPVARTrainingConfig, args) -> Tuple[nn.Module, nn.Module, nn.Module, nn.Module]:
-    """加载所有模型 - 适配AGIP-VAR架构"""
+def load_models(config: AIDVARTrainingConfig, args) -> Tuple[nn.Module, nn.Module, nn.Module, nn.Module]:
+    """加载所有模型 - 适配AID-VAR架构"""
     if dist.is_master():
-        logger.info("📦 加载AGIP-VAR模型架构...")
+        logger.info("📦 加载AID-VAR模型架构...")
     
     # 🔥 重要修复：使用正确的VQ-VAE配置参数
     # 根据vae_ch160v4096z32.pth的实际配置
@@ -268,8 +268,8 @@ def load_models(config: AGIPVARTrainingConfig, args) -> Tuple[nn.Module, nn.Modu
         logger.info(f"   VAR word_embed输入维度: {var.word_embed.in_features}")  # 应该是32
         logger.info(f"   VAR word_embed输出维度: {var.word_embed.out_features}")  # 应该是1024
     
-    # 创建AGIP-VAR组件 - 🔥 使用VAR的实际嵌入维度
-    planner = I_predictor(
+    # 创建AID-VAR组件 - 🔥 使用VAR的实际嵌入维度
+    planner = GuidanceInjector(
         input_dim=var.C,  # VAR的特征维度 (动态：16*64=1024 或 20*64=1280)
         embed_dim=var.C,  # 规划器嵌入维度与VAR保持一致
         num_layers=config.PLANNER_LAYERS,
@@ -290,18 +290,18 @@ def load_models(config: AGIPVARTrainingConfig, args) -> Tuple[nn.Module, nn.Modu
     total_params = planner_params + disc_params
     
     if dist.is_master():
-        logger.info(f"📊 AGIP-VAR可训练参数统计:")
-        logger.info(f"   I_predictor: {planner_params:,} 参数 ({planner_params/1e6:.2f}M)")
+        logger.info(f"📊 AID-VAR可训练参数统计:")
+        logger.info(f"   GuidanceInjector: {planner_params:,} 参数 ({planner_params/1e6:.2f}M)")
         logger.info(f"   Discriminator: {disc_params:,} 参数 ({disc_params/1e6:.2f}M)")
         logger.info(f"   总计: {total_params:,} 参数 ({total_params/1e6:.2f}M)")
         logger.info(f"🎯 模式: 空间感知规划词元图（逐位置相加）")
     
     return vqvae, var, planner, discriminator
 
-def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: AGIPVARTrainingConfig) -> Tuple[AmpOptimizer, AmpOptimizer]:
+def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: AIDVARTrainingConfig) -> Tuple[AmpOptimizer, AmpOptimizer]:
     """创建优化器"""
     if dist.is_master():
-        logger.info("⚙️ 创建AGIP-VAR优化器...")
+        logger.info("⚙️ 创建AID-VAR优化器...")
     
     # 获取可训练参数
     planner_params = list(planner.parameters())
@@ -329,11 +329,11 @@ def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: AGIP
     disc_param_count = sum(p.numel() for p in disc_trainable_params) / 1e6
     if dist.is_master():
         logger.info(f"📊 可训练参数统计:")
-        logger.info(f"   I_predictor: {planner_param_count:.2f}M 参数")
+        logger.info(f"   GuidanceInjector: {planner_param_count:.2f}M 参数")
         logger.info(f"   StyleGAN-T Discriminator (heads only): {disc_param_count:.2f}M 参数")
         logger.info(f"   🎯 ADD风格: 冻结DINO backbone + 训练判别器heads")
     
-    # 创建AmpOptimizer - I_predictor
+    # 创建AmpOptimizer - GuidanceInjector
     amp_planner_opt = AmpOptimizer(
         mixed_precision=0,  # 使用float32
         optimizer=torch.optim.AdamW(
@@ -365,7 +365,7 @@ def create_optimizers(planner: nn.Module, discriminator: nn.Module, config: AGIP
     
     if dist.is_master():
         logger.info(f"✅ AmpOptimizer创建完成")
-        logger.info(f"   I_predictor学习率: {config.LEARNING_RATE_PLANNER}")
+        logger.info(f"   GuidanceInjector学习率: {config.LEARNING_RATE_PLANNER}")
         logger.info(f"   Discriminator学习率: {config.LEARNING_RATE_DISCRIMINATOR}")
     
     return amp_planner_opt, amp_disc_opt
@@ -428,15 +428,15 @@ def create_data_loaders(args) -> Tuple[DataLoader, DataLoader, int]:
     
     return train_loader, val_loader, iters_train
 
-def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
+def train_full_imagenet(config: AIDVARTrainingConfig, args) -> str:
     """
-    执行AGIP-VAR完整ImageNet分布式训练
+    执行AID-VAR完整ImageNet分布式训练
     
     Returns:
         exp_dir: 实验目录路径（仅master进程有效）
     """
     if dist.is_master():
-        logger.info("🚀 开始AGIP-VAR完整ImageNet分布式训练...")
+        logger.info("🚀 开始AID-VAR完整ImageNet分布式训练...")
         logger.info(f"   数据路径: {args.data_path}")
         logger.info(f"   设备: {dist.get_device()}")
         logger.info(f"   全局批次大小: {args.glb_batch_size}")
@@ -480,7 +480,7 @@ def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
     # 创建数据加载器
     train_loader, val_loader, iters_train = create_data_loaders(args)
     
-    # 创建AGIP-VAR训练器
+    # 创建AID-VAR训练器
     trainer = PlannerTrainer(
         device=dist.get_device(),
         vae=vqvae,
@@ -511,7 +511,7 @@ def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
         tb_logger = DistLogger(
             TensorboardLogger(
                 log_dir=tb_log_dir, 
-                filename_suffix='agip_var_full_imagenet'
+                filename_suffix='aid_var_full_imagenet'
             ), 
             verbose=True
         )
@@ -547,7 +547,7 @@ def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
                     old_lr = param_group['lr']
                     param_group['lr'] = config.LEARNING_RATE_PLANNER
                     if dist.is_master() and old_lr != config.LEARNING_RATE_PLANNER:
-                        logger.info(f"🔄 I_predictor学习率重置: {old_lr} → {config.LEARNING_RATE_PLANNER}")
+                        logger.info(f"🔄 GuidanceInjector学习率重置: {old_lr} → {config.LEARNING_RATE_PLANNER}")
                 
                 for param_group in amp_disc_opt.optimizer.param_groups:
                     old_lr = param_group['lr']
@@ -556,7 +556,7 @@ def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
                         logger.info(f"🔄 判别器学习率重置: {old_lr} → {config.LEARNING_RATE_DISCRIMINATOR}")
             else:
                 if dist.is_master():
-                    logger.info(f"✅ 使用新学习率: I_predictor={config.LEARNING_RATE_PLANNER}, 判别器={config.LEARNING_RATE_DISCRIMINATOR}")
+                    logger.info(f"✅ 使用新学习率: GuidanceInjector={config.LEARNING_RATE_PLANNER}, 判别器={config.LEARNING_RATE_DISCRIMINATOR}")
         except Exception as e:
             if dist.is_master():
                 logger.error(f"❌ 检查点加载失败: {e}")
@@ -619,7 +619,7 @@ def train_full_imagenet(config: AGIPVARTrainingConfig, args) -> str:
         dist.barrier()
     
     if dist.is_master():
-        logger.info(f"🎉 AGIP-VAR完整ImageNet分布式训练完成！")
+        logger.info(f"🎉 AID-VAR完整ImageNet分布式训练完成！")
         logger.info(f"📁 实验结果保存在: {exp_dir}")
     
     return exp_dir if dist.is_master() else ""
@@ -629,7 +629,7 @@ def train_one_epoch(
     train_loader_iter, 
     iters_train: int,
     epoch: int,
-    config: AGIPVARTrainingConfig,
+    config: AIDVARTrainingConfig,
     metric_logger: MetricLogger,
     tb_logger
 ) -> Dict[str, float]:
@@ -656,7 +656,7 @@ def train_one_epoch(
     for batch_idx in range(iters_train):
         images, labels = next(train_loader_iter)
         
-        # 执行AGIP-VAR逐尺度训练步骤
+        # 执行AID-VAR逐尺度训练步骤
         step_metrics = trainer.train_step(images, labels, metric_logger)
         
         # 🔥 修复：直接使用trainer返回的正确指标名称
@@ -808,10 +808,10 @@ def load_checkpoint(
         if missing_keys and dist.is_master():
             logger.warning(f"⚠️ 缺失的键: {missing_keys}")
         if dist.is_master():
-            logger.info("✅ I_predictor模型状态加载成功")
+            logger.info("✅ GuidanceInjector模型状态加载成功")
     except Exception as e:
         if dist.is_master():
-            logger.error(f"❌ I_predictor模型状态加载失败: {e}")
+            logger.error(f"❌ GuidanceInjector模型状态加载失败: {e}")
         raise
     
     try:
@@ -828,10 +828,10 @@ def load_checkpoint(
         try:
             planner_optimizer.load_state_dict(checkpoint['planner_optimizer_state_dict'])
             if dist.is_master():
-                logger.info("✅ I_predictor优化器状态加载成功")
+                logger.info("✅ GuidanceInjector优化器状态加载成功")
         except Exception as e:
             if dist.is_master():
-                logger.warning(f"⚠️ I_predictor优化器状态加载失败，将使用默认状态: {e}")
+                logger.warning(f"⚠️ GuidanceInjector优化器状态加载失败，将使用默认状态: {e}")
         
         try:
             discriminator_optimizer.load_state_dict(checkpoint['discriminator_optimizer_state_dict'])
@@ -899,12 +899,12 @@ def main_training():
     # 如果是local_debug模式，快速测试
     if args.local_debug:
         if dist.is_master():
-            print("[local debug] AGIP-VAR调试模式 - 快速测试")
+            print("[local debug] AID-VAR调试模式 - 快速测试")
         # 这里可以添加简单的功能测试
         return
     
     # 创建配置对象并从args更新
-    config = AGIPVARTrainingConfig()
+    config = AIDVARTrainingConfig()
     
     # 从命令行参数更新配置
     if hasattr(args, 'ep'):
@@ -920,7 +920,7 @@ def main_training():
     if hasattr(args, 'lr_planner') and args.lr_planner is not None:
         config.LEARNING_RATE_PLANNER = args.lr_planner
         if dist.is_master():
-            logger.info(f"🔄 从命令行覆盖I_predictor学习率: {args.lr_planner}")
+            logger.info(f"🔄 从命令行覆盖GuidanceInjector学习率: {args.lr_planner}")
     
     if hasattr(args, 'lr_discriminator') and args.lr_discriminator is not None:
         config.LEARNING_RATE_DISCRIMINATOR = args.lr_discriminator  

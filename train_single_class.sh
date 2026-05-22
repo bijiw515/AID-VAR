@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ===============================================
-# 🎯 AGIP-VAR 单分类训练脚本
-# 用于在ImageNet单个类别上训练AGIP-VAR模型
+# 🎯 AID-VAR 单分类训练脚本
+# 用于在ImageNet单个类别上训练AID-VAR模型
 # ===============================================
 
 # 设置严格模式
@@ -30,7 +30,7 @@ log_error() {
 }
 
 log_blue() {
-    echo -e "${BLUE}[AGIP-VAR]${NC} $1"
+    echo -e "${BLUE}[AID-VAR]${NC} $1"
 }
 
 # --------- VAR模型快速切换函数 ---------
@@ -78,13 +78,13 @@ DEVICE="cuda:0"                            # 训练设备
 # d16: 1024维, d20: 1280维, d24: 1536维
 log_info "🎯 当前选择: VAR-d${VAR_DEPTH} (嵌入维度: $((VAR_DEPTH * 64)))"
 
-# AGIP-VAR特定配置
+# AID-VAR特定配置
 WARMUP_STEPS=63                          # 判别器预热步数
 ENABLE_STAGED_TRAINING=true                # 启用分阶段训练
 LAMBDA_REC=0.01                             # 重建损失权重
 
 # 优化器配置
-LR_PLANNER=5e-6                            # I_predictor学习率
+LR_PLANNER=5e-6                            # GuidanceInjector学习率
 LR_DISCRIMINATOR=1e-6                      # 判别器学习率（提高以防止崩溃）
 
 # 输出配置
@@ -150,7 +150,7 @@ setup_environment() {
     
     # 激活conda环境
     source /home/intern/miniconda3/etc/profile.d/conda.sh
-    conda activate agip-var
+    conda activate aid-var
     
     export TMPDIR=/home/intern/tmp
 
@@ -194,7 +194,7 @@ setup_environment() {
 
 # --------- 显示配置信息 ---------
 show_configuration() {
-    log_blue "==================== AGIP-VAR 单分类训练配置 ===================="
+    log_blue "==================== AID-VAR 单分类训练配置 ===================="
     log_blue "📊 数据配置:"
     log_blue "   数据根目录: $DATA_ROOT"
     log_blue "   训练类别ID: $CLASS_ID"
@@ -206,11 +206,11 @@ show_configuration() {
     log_blue "   VQVAE权重: $VQVAE_CKPT"
     log_blue "   训练设备: $DEVICE"
     log_blue ""
-    log_blue "🎯 AGIP-VAR配置:"
+    log_blue "🎯 AID-VAR配置:"
     log_blue "   预热步数: $WARMUP_STEPS"
     log_blue "   分阶段训练: $ENABLE_STAGED_TRAINING"
     log_blue "   重建损失权重: $LAMBDA_REC"
-    log_blue "   I_predictor学习率: $LR_PLANNER"
+    log_blue "   GuidanceInjector学习率: $LR_PLANNER"
     log_blue "   判别器学习率: $LR_DISCRIMINATOR"
     log_blue ""
     log_blue "📈 训练配置:"
@@ -227,7 +227,7 @@ show_configuration() {
 
 # --------- 启动训练 ---------
 start_training() {
-    log_info "🚀 启动AGIP-VAR单分类训练..."
+    log_info "🚀 启动AID-VAR单分类训练..."
     
     # 生成时间戳
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -302,7 +302,7 @@ trap handle_interrupt SIGINT SIGTERM
 
 # --------- 主函数 ---------
 main() {
-    log_blue "🔥 AGIP-VAR单分类训练启动脚本"
+    log_blue "🔥 AID-VAR单分类训练启动脚本"
     log_blue "================================================"
     
     # 检查环境
@@ -331,13 +331,13 @@ main() {
     start_training
     
     # 完成
-    log_blue "🎉 AGIP-VAR单分类训练脚本执行完成！"
+    log_blue "🎉 AID-VAR单分类训练脚本执行完成！"
 }
 
 # --------- 帮助信息 ---------
 show_help() {
     cat << EOF
-🎯 AGIP-VAR单分类训练脚本使用说明
+🎯 AID-VAR单分类训练脚本使用说明
 
 用法: $0 [选项]
 
