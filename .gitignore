@@ -163,3 +163,8 @@ nosetests.xml
 coverage.xml
 *.lcov
 *.prof
+
+cluster_coordination/
+cudnn-linux-x86_64-8.9.7.29_cuda12-archive/
+stylegan_t(1)/
+*tar.xz

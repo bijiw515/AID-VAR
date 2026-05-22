@@ -202,25 +202,24 @@ class VAR(nn.Module):
         g_seed: Optional[int] = None,
         more_smooth=False
     ) -> torch.Tensor:
-        """AID-VAR引导推理：VAR + GuidanceInjector引导生成
-        
-        完全按照autoregressive_infer_cfg的模式实现，但加入了GuidanceInjector引导：
-        1. 基于前一尺度VAR生成的tokens实时生成引导
-        2. 引导token直接相加注入，与训练时保持一致
-        3. 支持CFG但对引导token也进行相应处理
-        
-        Args:
-            planner: GuidanceInjector模块
-            B: 批次大小
-            label_B: 类别标签
-            cfg: 分类器无关引导强度
-            top_k: top-k采样
-            top_p: top-p采样
-            g_seed: 随机种子
-            more_smooth: 平滑采样（用于可视化）
-            
-        Returns:
-            生成的图像 (B, 3, H, W) in [0, 1]
+        """
+        AID-VAR guided inference: VAR generation with GuidanceInjector.
+
+        Follows the same pattern as autoregressive_infer_cfg but injects GuidanceInjector
+        guidance at each scale:
+        1. Guidance is generated in real time from tokens produced at the previous scale.
+        2. Guidance tokens are added element-wise, consistent with training.
+        3. CFG is supported; guidance tokens are duplicated accordingly.
+
+        :param planner: GuidanceInjector module
+        :param B: batch size
+        :param label_B: class label
+        :param cfg: classifier-free guidance strength
+        :param top_k: top-k sampling
+        :param top_p: top-p sampling
+        :param g_seed: random seed
+        :param more_smooth: smooth sampling (for visualization)
+        :return: generated image (B, 3, H, W) in [0, 1]
         """
         if g_seed is None: 
             rng = None
@@ -228,16 +227,16 @@ class VAR(nn.Module):
             self.rng.manual_seed(g_seed)
             rng = self.rng
         
-        # 准备标签 - 与autoregressive_infer_cfg保持一致
+        # Prepare labels - consistent with autoregressive_infer_cfg
         if label_B is None:
             label_B = torch.multinomial(self.uniform_prob, num_samples=B, replacement=True, generator=rng).reshape(B)
         elif isinstance(label_B, int):
             label_B = torch.full((B,), fill_value=self.num_classes if label_B < 0 else label_B, device=self.lvl_1L.device)
         
-        # CFG准备 - 与原始实现保持一致，无条件类别为self.num_classes
+        # CFG preparation - consistent with original implementation, unconditional class is self.num_classes
         sos = cond_BD = self.class_emb(torch.cat((label_B, torch.full_like(label_B, fill_value=self.num_classes)), dim=0))
         
-        # 位置和层级嵌入
+        # Positional and hierarchical embeddings
         lvl_pos = self.lvl_embed(self.lvl_1L) + self.pos_1LC
         next_token_map = sos.unsqueeze(1).expand(2 * B, self.first_l, -1) + \
                         self.pos_start.expand(2 * B, self.first_l, -1) + \
@@ -246,100 +245,100 @@ class VAR(nn.Module):
         cur_L = 0
         f_hat = sos.new_zeros(B, self.Cvae, self.patch_nums[-1], self.patch_nums[-1])
         
-        # 启用KV缓存
+        # Enable KV cache
         for b in self.blocks: 
             b.attn.kv_caching(True)
         
-        # 存储每个尺度生成的tokens，用于下一尺度的引导生成
+        # Store generated tokens per scale for next-scale guidance
         generated_tokens_per_scale = []
         
         try:
             for si, pn in enumerate(self.patch_nums):
-                ratio = si / self.num_stages_minus_1  # 使用与原始实现相同的ratio计算
+                ratio = si / self.num_stages_minus_1
                 cur_L += pn * pn
                 
-                # 生成引导tokens（从第二个尺度开始）
+                # Generate guidance tokens (starting from second scale)
                 guidance_tokens = None
                 if si > 0 and len(generated_tokens_per_scale) > 0:
-                    # 获取前一尺度的tokens
-                    prev_tokens = generated_tokens_per_scale[-1]  # 前一尺度生成的tokens
+                    # Get previous scale tokens
+                    prev_tokens = generated_tokens_per_scale[-1]
                     
                     try:
-                        # 转换为embedding features（与训练时保持一致）
+                        # Convert to embedding features (consistent with training)
                         prev_embed = F.embedding(prev_tokens, self.vae_quant_proxy[0].embedding.weight.detach())
                         prev_features = self.word_embed(prev_embed)  # (B, L_prev, C)
                         
-                        # 数值稳定性保护
+                        # Numerical stability protection
                         prev_features = torch.clamp(prev_features, min=-10.0, max=10.0)
                         prev_features = prev_features.detach().clone().requires_grad_(False)
                         
-                        # 使用GuidanceInjector生成引导tokens - 与训练时完全一致
+                        # Generate guidance tokens using GuidanceInjector - fully consistent with training
                         guidance_tokens = planner(prev_features, target_patch_num=pn)  # (B, pn*pn, C)
                         
                         if guidance_tokens is not None:
-                            # 数值稳定性保护
+                            # Numerical stability protection
                             guidance_tokens = torch.clamp(guidance_tokens, min=-5.0, max=5.0)
                             
-                            # CFG处理：为引导tokens也复制一份用于无条件生成
+                            # CFG: duplicate guidance tokens for unconditional generation
                             guidance_tokens = torch.cat([guidance_tokens, guidance_tokens], dim=0)  # (2*B, pn*pn, C)
                         
                     except Exception as e:
                         print(f"Warning: Failed to generate guidance for scale {si}: {e}")
                         guidance_tokens = None
                 
-                # VAR前向传播
+                # VAR forward pass
                 cond_BD_or_gss = self.shared_ada_lin(cond_BD)
                 x = next_token_map
                 
-                # 注入引导tokens（与训练时autoregressive_train_step保持一致）
+                # Inject guidance tokens (consistent with training autoregressive_train_step)
                 if guidance_tokens is not None:
-                    # 确保维度匹配
+                    # Ensure dimension match
                     if guidance_tokens.shape[0] == x.shape[0] and guidance_tokens.shape[1] == x.shape[1]:
-                        # 🔥 应用训练时的引导权重 0.001，与训练时保持完全一致
-                        x = x + 0.001 * guidance_tokens  # 与训练时权重一致
+                        # Apply training guidance weight 0.001, fully consistent with training
+                        x = x + 0.001 * guidance_tokens
                     else:
                         print(f"Warning: Guidance token shape mismatch at scale {si}: {guidance_tokens.shape} vs {x.shape}")
                 
-                # Transformer blocks处理
+                # Transformer blocks processing
                 for b in self.blocks:
                     x = b(x=x, cond_BD=cond_BD_or_gss, attn_bias=None)
                 
-                # 获取logits
+                # Get logits
                 logits_BlV = self.get_logits(x, cond_BD)
                 
-                # CFG应用 - 与原始实现保持一致
+                # Apply CFG - consistent with original implementation
                 t = cfg * ratio
                 logits_BlV = (1+t) * logits_BlV[:B] - t * logits_BlV[B:]
                 
-                # 采样
+                # Sampling
                 idx_Bl = sample_with_top_k_top_p_(logits_BlV, rng=rng, top_k=top_k, top_p=top_p, num_samples=1)[:, :, 0]
                 generated_tokens_per_scale.append(idx_Bl)
                 
-                # 更新f_hat和next_token_map（与原始实现保持一致）
-                if not more_smooth:  # 默认情况
+                # Update f_hat and next_token_map (consistent with original implementation)
+                if not more_smooth:  # default case
                     h_BChw = self.vae_quant_proxy[0].embedding(idx_Bl)   # B, l, Cvae
-                else:   # 用于可视化的平滑采样
-                    gum_t = max(0.27 * (1 - ratio * 0.95), 0.005)   # 参考mask-git
+                else:   # smooth sampling for visualization
+                    gum_t = max(0.27 * (1 - ratio * 0.95), 0.005)   # reference mask-git
                     h_BChw = gumbel_softmax_with_rng(logits_BlV.mul(1 + ratio), tau=gum_t, hard=False, dim=-1, rng=rng) @ self.vae_quant_proxy[0].embedding.weight.unsqueeze(0)
                 
                 h_BChw = h_BChw.transpose_(1, 2).reshape(B, self.Cvae, pn, pn)
                 f_hat, next_token_map = self.vae_quant_proxy[0].get_next_autoregressive_input(si, len(self.patch_nums), f_hat, h_BChw)
                 
-                # 准备下一阶段（与原始实现保持一致）
+                # Prepare next stage (consistent with original implementation)
                 if si != self.num_stages_minus_1:
                     next_token_map = next_token_map.view(B, self.Cvae, -1).transpose(1, 2)
                     next_token_map = self.word_embed(next_token_map) + lvl_pos[:, cur_L:cur_L + self.patch_nums[si+1] ** 2]
-                    next_token_map = next_token_map.repeat(2, 1, 1)   # CFG: 双倍批次大小
+                    next_token_map = next_token_map.repeat(2, 1, 1)   # CFG: double batch size
             
-            # 清理KV缓存
+            # Clear KV cache
             for b in self.blocks: 
                 b.attn.kv_caching(False)
             
-            # 生成最终图像（与原始实现保持一致）
+            # Generate final image (consistent with original implementation)
             return self.vae_proxy[0].fhat_to_img(f_hat).add_(1).mul_(0.5)   # de-normalize, from [-1, 1] to [0, 1]
             
         except Exception as e:
-            # 出错时的fallback：使用标准VAR推理
+            # Fallback on error: use standard VAR inference
             print(f"AID-VAR inference failed: {e}, falling back to standard VAR")
             for b in self.blocks: 
                 b.attn.kv_caching(False)

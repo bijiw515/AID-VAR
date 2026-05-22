@@ -137,16 +137,16 @@ class Args(Tap):
     local_debug: bool = 'KEVIN_LOCAL' in os.environ
     dbg_nan: bool = False   # 'KEVIN_LOCAL' in os.environ
     
-    # checkpoint恢复
-    resume_checkpoint: str = ""  # 恢复训练的检查点路径
+    # Checkpoint resume
+    resume_checkpoint: str = ""  # checkpoint path for resuming training
     
-    # 🔥 AID-VAR训练参数
-    lr_planner: float = None      # GuidanceInjector学习率，覆盖默认配置
-    lr_discriminator: float = None  # 判别器学习率，覆盖默认配置
-    load_optimizer: bool = True   # 是否加载优化器状态（包括学习率）
+    # AID-VAR training parameters
+    lr_planner: float = None      # GuidanceInjector learning rate, overrides default
+    lr_discriminator: float = None  # discriminator learning rate, overrides default
+    load_optimizer: bool = True   # whether to load optimizer state (including learning rate)
     
-    # 🔥 消融实验参数
-    use_broadcast_mode: bool = False  # 是否使用广播模式（消融实验）
+    # Ablation experiment parameters
+    use_broadcast_mode: bool = False  # whether to use broadcast mode (ablation)
     
     def compile_model(self, m, fast):
         if fast == 0 or self.local_debug:
